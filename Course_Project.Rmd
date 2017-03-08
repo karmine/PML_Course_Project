@@ -1,0 +1,212 @@
+---
+title: "Modeling Weight Lifting Exercises in Human Activity Recognition"
+author: "Sergio Contador"
+date: "March 2017"
+output: html_document
+---
+
+## Introduction
+The **W**eight **L**ifting **E**xercises (**WLE**) is a **H**uman **A**ctivity **R**ecognition (**HAR**) research that has traditionally focused on discriminating between different activities, i.e. to predict "which" activity was performed at a specific point in time (like with the Daily Living Activities dataset above). The approach we propose for the Weight Lifting Exercises dataset is to investigate "how (well)" an activity was performed by the wearer. The "how (well)" investigation has only received little attention so far, even though it potentially provides useful information for a large variety of applications,such as sports training.  
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+The goal of this project (the course project on the Practical Machine Learning Course from Coursera) is to predict the manner in which they did the exercise. This is the **classe** variable in the training set. We use any of the other variables in dataset to predict with. 
+
+
+## Experiment
+The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. The participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions (the **classe** variable): exactly according to the specification (Class **A**), throwing the elbows to the front (Class **B**), lifting the dumbbell only halfway** (Class **C**), lowering the dumbbell only halfway (Class **D**) and throwing the hips to the front (Class **E**). 
+
+The participants wearing on the body accelerometers to take measures on 4 parts: belt, forearm, arm, and dumbell. There were another sensor on the dumbbell.
+
+You can see the on-body-sensing-schema [here](http://groupware.les.inf.puc-rio.br/static/WLE/on-body-sensing-schema.png).
+
+
+## Dataset
+We work with the WLE dataset (read more [here](http://groupware.les.inf.puc-rio.br/har#ixzz4adw24dRG)). You can download the WLE dataset [here](http://groupware.les.inf.puc-rio.br/har).   
+
+The training data for this project are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv). The test data for this project are available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).  
+
+
+## Data Processing
+We transform train dataset into two datasets: train dataset for train phase and test dataset for test phase. Then, we use
+test dataset for evaluation phase.
+```{r}
+#########################################################
+# Author: Sergio Contador
+# Date: March 2017
+# Title: Practical Machine Learninig Course: Course Project
+#########################################################
+
+
+# Load libraries required. 
+suppressMessages(library(caret))
+library(rpart)
+library(rpart.plot)
+suppressMessages(library(randomForest))
+library(corrplot)
+
+
+# Load datasets.
+# Create dir principal
+dir.principal <- paste(getwd(), sep = "")
+
+
+# Load Data
+dir <- paste(dir.principal, "/Data/WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv", sep = "")
+dataRaw <- read.csv(dir)
+
+dir <- paste(dir.principal, "/Data/pml-training.csv", sep = "")
+dataTrainRaw <- read.csv(dir, row.names = NULL)
+
+dir <- paste(dir.principal, "/Data/pml-testing.csv", sep = "")
+dataValidateRaw <- read.csv(dir)
+
+
+# filter columns on: belt, forearm, arm, dumbell
+position <- grepl("belt|foreman|arm|dumbell", names(dataTrainRaw))
+dataTrain <- dataTrainRaw[, position]
+dataValidate <- dataValidateRaw[, position]
+
+
+# Clean NA values 
+dataTrain <- dataTrain[, colSums(is.na(dataTrain)) == 0] 
+dataValidate <- dataValidate[, colSums(is.na(dataValidate)) == 0] 
+
+
+# Clean data having the train and test data with same variables
+position <- intersect(names(dataTrain), names(dataValidate))
+dataTrain <- dataTrain[position]
+dataValidate <- dataValidate[position]
+
+dataTrain$classe <- as.factor(as.character(dataTrainRaw$classe))
+dataValidate$problem_id <- dataValidateRaw$problem_id
+
+
+# Data Slicing for Cross Validation
+set.seed(1234) # For reproducibile purpose
+position <- createDataPartition(dataTrain$classe, p = 0.75, list = FALSE)
+dataTest <- dataTrain[-position, ]
+dataTrain <- dataTrain[position, ]
+
+
+# Summary full dataset.
+dim(dataRaw)
+
+
+# Summary train data for train phase.
+dim(dataTrain)
+names(dataTrain)
+
+
+# Summary train data for test phase.
+dim(dataTest)
+names(dataTest)
+
+
+# Summary test data for evaluate phase.
+dim(dataValidate)
+names(dataValidate)
+```
+
+
+## Data Exploring
+First, we plot density function of classe distributed along the participants. Then, we wrapper for lattice plotting of predictor variables. Finally, we look at the correlations between predictor variables ploting the correlation matrix.
+```{r}
+# Explorationg Data
+# Plot density of classe
+qplot(classe, data = dataTrain, colour = classe, geom = "density")
+```
+
+
+```{r}
+# Plot the relationship between features and outcome. 
+# From the plot below, each features has relatively the same distribution among the 5 outcome levels (A, B, C, D, E).
+featurePlot(dataTrain[, - dim(dataTrain)[2]], dataTrain[, "classe"], "strip")
+```
+
+
+```{r}
+# Plot correlation matrix
+correlation <- cor(dataTrain[, - dim(dataTrain)[2]])
+corrplot(correlation, method = "color")
+```
+
+There are some correlations between variables measured on belt, arm and foreman, but the correlations isn't enough to consider perform further proccesing to get a subset of variables more uncorrelated (A good set of features is when they are highly uncorrelated).
+
+## Data Modeling
+We select **R**andom **F**orest **A**lgorithm (**RFA**) to model the data. RFA is a predictive model for HAR because RFA automatically select important variables (we have 40 varables lo lead with) and correct for decision trees' habit of overfitting to their train dataset. 
+
+We use 6-fold cross validation when applying the algorithm.
+
+```{r, cache = TRUE}
+# # Less than 7 min
+n <- 500 # 
+ncv <- 6
+control <- trainControl(method = "cv", number = ncv)
+t <- system.time(model <- train(
+        
+        classe ~ ., 
+        data = dataTrain[, -1], 
+        method = "rf", 
+        trControl = control, 
+        ntree = n)
+        
+) 
+paste("Ejecution Time:", round(t[3] / 60, digits = 2), "[min]")
+model
+```
+
+
+## Data Prediction
+```{r}
+# Prediction
+prediction <- predict(model, dataTest)
+confusion <- confusionMatrix(dataTest$classe, prediction)
+confusion
+
+
+# Plot correlation matrix of confusion
+correlation <- cor(as.matrix(confusion))
+corrplot(correlation, method = "color")
+```
+
+The values are highly correlated. 
+
+###Model Accuracy and Error Sample 
+```{r}
+# Accuracy and Sample Error of the model
+accuracy <- postResample(prediction, dataTest$classe)
+
+
+# out-of-sample error of the model
+error <- 1 - as.numeric(confusionMatrix(dataTest$classe, prediction)$overall[1])
+
+
+# Print results
+paste(paste("Accuracy:", round(accuracy[1], digits = 4)),
+      paste("Error:", round(error, digits = 4)), sep = "    ")
+```
+
+The error is 0.98%. So, expected error less than 1% is enough to consider our model a good model.
+
+### Prediction
+We predict  20 different test cases.
+```{r}
+# Predicting
+result <- predict(model, dataValidate)
+as.character(result)
+```
+
+
+
+
+## Conclusions
+We used WLE dataset for HAR of weight lifting exercises and divided data into three datasets.
+
+We plot correlation matrix and  we observed that there are some correlations between variables measured on belt, arm and foreman, but the correlations isn't enough to consider perform further proccesing.
+
+We selected RFA to model the data. We used 6-fold cross validation when applying the algorithm. We tested the model with the test dataset and the sample error is 0.98%. So, expected error less than 1% is enough to consider our model a good model.
+
+We predicted the classe for 20 different cases obtaining next predictions: 35% of class A, 40% of class B, 5% of class C, 5% of class D and 15% of class E.
+
+
